@@ -2,7 +2,7 @@ name: Vital Rust stats
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # кожні ~10 хвилин (GitHub може трохи затримувати)
+    - cron: "0 */4 * * *"   # кожні 4 години (GitHub може трохи затримувати)
   workflow_dispatch: {}       # кнопка ручного запуску (для перевірки)
 
 # дозвіл комітити оновлений state.json назад у репозиторій
@@ -35,6 +35,9 @@ jobs:
       - name: Запуск трекера
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+          PROXY_USER: ${{ secrets.PROXY_USER }}
+          PROXY_PASS: ${{ secrets.PROXY_PASS }}
           THREAD_ID: ${{ vars.THREAD_ID }}
           STEAM_IDS: ${{ vars.STEAM_IDS }}
           SERVER_IDS: ${{ vars.SERVER_IDS }}
