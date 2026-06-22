@@ -27,8 +27,10 @@ jobs:
       - name: Встановити залежності
         run: npm install
 
-      - name: Встановити браузер Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Встановити браузер Chromium та xvfb
+        run: |
+          npx playwright install --with-deps chromium
+          sudo apt-get install -y xvfb
 
       - name: Запуск трекера
         env:
@@ -37,7 +39,7 @@ jobs:
           STEAM_IDS: ${{ vars.STEAM_IDS }}
           SERVER_IDS: ${{ vars.SERVER_IDS }}
           MODE: ${{ vars.MODE }}
-        run: node vital-playwright.mjs
+        run: xvfb-run -a node vital-playwright.mjs
 
       - name: Зберегти ID повідомлення (state.json)
         run: |
@@ -50,3 +52,4 @@ jobs:
           else
             echo "state.json без змін"
           fi
+
