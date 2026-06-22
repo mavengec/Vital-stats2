@@ -10,7 +10,9 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+chromium.use(StealthPlugin()); // маскування під справжній браузер (обхід "Just a moment" Cloudflare)
 
 const CONFIG = {
   DISCORD_WEBHOOK_URL: "",
@@ -46,8 +48,10 @@ function resolveConfig() {
 // Сам сайт робить запит до API і отримує дані; ми лише натискаємо потрібний сервер
 // і перехоплюємо відповідь, яку віддав сайт (це єдиний запит, що проходить).
 async function fetchData(cfg) {
+  // headless:false разом із xvfb (віртуальний екран) — так Cloudflare рідше блокує
   const browser = await chromium.launch({
-    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
+    headless: false,
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled", "--start-maximized"],
   });
   try {
     const context = await browser.newContext({
@@ -58,16 +62,27 @@ async function fetchData(cfg) {
     const page = await context.newPage();
     await page.goto(SITE, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-    // дочекатись, поки відрендериться селектор серверів (гідрація сторінки)
-    let buttonsReady = true;
-    await page
-      .waitForFunction(
-        () => [...document.querySelectorAll("button")].some((b) => /10x|monthly|medium|mondays/i.test(b.textContent || "")),
-        { timeout: 45000 }
-      )
-      .catch(() => { buttonsReady = false; });
+    // чекаємо, поки Cloudflare "Just a moment" сам пропустить і зʼявиться селектор серверів.
+    // Stealth-режим зазвичай проходить перевірку за кілька секунд.
+    let buttonsReady = false;
+    for (let i = 0; i < 12 && !buttonsReady; i++) {
+      buttonsReady = await page
+        .waitForFunction(
+          () => [...document.querySelectorAll("button")].some((b) => /10x|monthly|medium|mondays/i.test(b.textContent || "")),
+          { timeout: 10000 }
+        )
+        .then(() => true)
+        .catch(() => false);
+      if (!buttonsReady) {
+        const t = await page.title().catch(() => "?");
+        console.log(`Очікування проходження Cloudflare... (спроба ${i + 1}, заголовок: "${t}")`);
+        // інколи допомагає перезавантаження після першого проходження челенджа
+        if (i === 4) await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+      }
+    }
     await page.waitForTimeout(1500);
-    console.log("Сторінку завантажено:", await page.title(), "| кнопки серверів:", buttonsReady ? "є" : "НЕ ЗʼЯВИЛИСЬ");
+    console.log("Підсумок завантаження:", await page.title().catch(() => "?"), "| кнопки серверів:", buttonsReady ? "є" : "НЕ ЗʼЯВИЛИСЬ");
+    if (!buttonsReady) throw new Error("Cloudflare не пропустив (сторінка 'Just a moment') — селектор серверів не зʼявився.");
 
     const out = {};
     for (const id of cfg.SERVER_IDS) {
