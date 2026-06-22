@@ -46,7 +46,9 @@ function resolveConfig() {
 // Сам сайт робить запит до API і отримує дані; ми лише натискаємо потрібний сервер
 // і перехоплюємо відповідь, яку віддав сайт (це єдиний запит, що проходить).
 async function fetchData(cfg) {
-  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await chromium.launch({
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
+  });
   try {
     const context = await browser.newContext({
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -55,14 +57,26 @@ async function fetchData(cfg) {
     });
     const page = await context.newPage();
     await page.goto(SITE, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForTimeout(3500);
+
+    // дочекатись, поки відрендериться селектор серверів (гідрація сторінки)
+    let buttonsReady = true;
+    await page
+      .waitForFunction(
+        () => [...document.querySelectorAll("button")].some((b) => /10x|monthly|medium|mondays/i.test(b.textContent || "")),
+        { timeout: 45000 }
+      )
+      .catch(() => { buttonsReady = false; });
+    await page.waitForTimeout(1500);
+    console.log("Сторінку завантажено:", await page.title(), "| кнопки серверів:", buttonsReady ? "є" : "НЕ ЗʼЯВИЛИСЬ");
 
     const out = {};
     for (const id of cfg.SERVER_IDS) {
       try {
         out[id] = { matched: await loadServerPlayers(page, id, cfg.STEAM_IDS) };
+        console.log(`Сервер ${SERVER_NAMES[id] || id}: гравців знайдено ${out[id].matched.length}`);
       } catch (e) {
         out[id] = { error: String((e && e.message) || e) };
+        console.log(`Сервер ${SERVER_NAMES[id] || id}: ПОМИЛКА — ${out[id].error}`);
       }
     }
     return out;
@@ -71,31 +85,30 @@ async function fetchData(cfg) {
   }
 }
 
-// натиснути кнопку сервера в селекторі й дочекатись відповіді /players/overview
+// натиснути кнопку сервера в селекторі й дочекатись відповіді /players/overview.
+// Promise.all → обидва проміси «оброблені», тож витоку/падіння процесу не буде.
 async function loadServerPlayers(page, serverId, steamIds) {
   const name = SERVER_NAMES[serverId] || String(serverId);
-  const respPromise = page.waitForResponse(
-    (r) => r.url().includes("/players/overview") && r.request().method() === "POST" && r.status() === 200,
-    { timeout: 45000 }
-  );
-  const clicked = await page.evaluate((nm) => {
-    const ns = (s) => (s || "").replace(/\s+/g, "").toLowerCase();
-    const target = ns(nm); // напр. "eumonthly"
-    const els = [...document.querySelectorAll("button,[role=button],a,div,span")];
-    for (const el of els) {
-      const t = ns(el.textContent);
-      // кнопка селектора коротка (напр. "eueumonthly"), футер-картки довгі → відсікаємо за довжиною
-      if (t.length > 0 && t.length < 16 && t.endsWith(target)) {
-        const clickable = el.closest("button,[role=button],a") || el;
-        clickable.click();
-        return true;
+  const [resp] = await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes("/players/overview") && r.request().method() === "POST" && r.status() === 200,
+      { timeout: 45000 }
+    ),
+    page.evaluate((nm) => {
+      const ns = (s) => (s || "").replace(/\s+/g, "").toLowerCase();
+      const target = ns(nm); // напр. "eumonthly"
+      const els = [...document.querySelectorAll("button,[role=button],a,div,span")];
+      for (const el of els) {
+        const t = ns(el.textContent);
+        if (t.length > 0 && t.length < 16 && t.endsWith(target)) {
+          (el.closest("button,[role=button],a") || el).click();
+          return true;
+        }
       }
-    }
-    return false;
-  }, name);
-  if (!clicked) throw new Error(`не знайшов кнопку сервера «${name}» на сторінці`);
+      throw new Error(`кнопку сервера «${nm}» не знайдено на сторінці`);
+    }, name),
+  ]);
 
-  const resp = await respPromise;
   const j = await resp.json();
   const arr = j.data || j.players || j.items || j;
   const wanted = new Set(steamIds.map(String));
